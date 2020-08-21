@@ -1,5 +1,15 @@
-use crate::{backend::EguiBevyBackend, painter};
-use bevy::{prelude::*, window::WindowCloseRequested};
+use crate::backend::EguiBevyBackend;
+use bevy::{
+    math::vec2,
+    prelude::*,
+    render::{
+        pipeline::PipelineDescriptor,
+        render_graph::{base, AssetRenderResourcesNode, RenderGraph},
+        shader::{ShaderStage, ShaderStages},
+    },
+    render::{renderer::RenderResources, shader::ShaderDefs},
+    window::WindowCloseRequested,
+};
 use egui::app::RunMode;
 use std::{sync::Arc, time::Instant};
 
@@ -81,24 +91,70 @@ fn egui_pre_update_system(mut state: ResMut<EguiPluginState>, mut ctx: ResMut<Eg
 fn egui_post_update_system(mut state: ResMut<EguiPluginState>, ctx: Res<EguiContext>) {
     let frame_time = (Instant::now() - state.frame_start).as_secs_f64() as f32;
 
+    if let Some(raw_input) = state.raw_input.clone() {
+        state.runner.frame_times.add(raw_input.time, frame_time);
+    }
+
     if ctx.ui.is_none() {
         return;
     }
 
     let (_output, paint_jobs) = state.ctx.end_frame();
 
-    if let Some(raw_input) = state.raw_input.clone() {
-        state.runner.frame_times.add(raw_input.time, frame_time);
-    }
-
-    painter::paint_jobs(paint_jobs, state.ctx.texture());
-
-    // At this point egui_glium checks for quit() or request_redraw.
-    // This is already handled by bevy so we can ignore that
+    // paint
+    let _texture = state.ctx.texture();
+    for (_clip_rect, _triangles) in paint_jobs {}
 
     // TODO
     // handle_output(output, &display, clipboard.as_mut());
 }
+
+#[derive(RenderResources, ShaderDefs, Default)]
+struct EguiMaterial {
+    pub a_pos: Vec2,
+    pub a_color: Color,
+    pub a_tc: Vec2,
+}
+
+const VERTEX_SHADER: &str = r#"
+    #version 140
+    uniform vec2 u_screen_size;
+    uniform vec2 u_tex_size;
+    in vec2 a_pos;
+    in vec4 a_color;
+    in vec2 a_tc;
+    out vec4 v_color;
+    out vec2 v_tc;
+    void main() {
+        gl_Position = vec4(
+            2.0 * a_pos.x / u_screen_size.x - 1.0,
+            1.0 - 2.0 * a_pos.y / u_screen_size.y,
+            0.0,
+            1.0);
+        v_color = a_color / 255.0;
+        v_tc = a_tc / u_tex_size;
+    }
+"#;
+
+const FRAGMENT_SHADER: &str = r#"
+    #version 140
+    uniform sampler2D u_sampler;
+    in vec4 v_color;
+    in vec2 v_tc;
+    out vec4 f_color;
+    // glium expects linear output.
+    vec3 linear_from_srgb(vec3 srgb) {
+        bvec3 cutoff = lessThan(srgb, vec3(0.04045));
+        vec3 higher = pow((srgb + vec3(0.055)) / vec3(1.055), vec3(2.4));
+        vec3 lower = srgb / vec3(12.92);
+        return mix(higher, lower, cutoff);
+    }
+    void main() {
+        f_color = v_color;
+        f_color.rgb = linear_from_srgb(f_color.rgb);
+        f_color *= texture(u_sampler, v_tc).r;
+    }
+"#;
 
 fn startup(_world: &mut World, resources: &mut Resources) {
     let start_time = Instant::now();
@@ -118,14 +174,49 @@ fn startup(_world: &mut World, resources: &mut Resources) {
     resources.insert(ui);
 }
 
+fn startup_rendering(
+    mut _commands: Commands,
+    mut pipelines: ResMut<Assets<PipelineDescriptor>>,
+    mut shaders: ResMut<Assets<Shader>>,
+    mut materials: ResMut<Assets<EguiMaterial>>,
+    mut render_graph: ResMut<RenderGraph>,
+) {
+    // Create a new shader pipeline
+    let _pipeline_handle = pipelines.add(PipelineDescriptor::default_config(ShaderStages {
+        vertex: shaders.add(Shader::from_glsl(ShaderStage::Vertex, VERTEX_SHADER)),
+        fragment: Some(shaders.add(Shader::from_glsl(ShaderStage::Fragment, FRAGMENT_SHADER))),
+    }));
+
+    // Add an AssetRenderResourcesNode to our Render Graph.
+    // This will bind MyMaterial resources to our shader
+    render_graph.add_system_node(
+        "egui_material",
+        AssetRenderResourcesNode::<EguiMaterial>::new(true),
+    );
+
+    // Add a Render Graph edge connecting our new "my_material" node to the main pass node.
+    // This ensures "my_material" runs before the main pass
+    render_graph
+        .add_node_edge("egui_material", base::node::MAIN_PASS)
+        .unwrap();
+
+    let _egui_material = materials.add(EguiMaterial {
+        a_pos: vec2(0.0, 0.0),
+        a_color: Color::rgb(0.0, 0.0, 0.0),
+        a_tc: vec2(0.0, 0.0),
+    });
+}
+
 pub struct EguiPlugin;
 
 impl Plugin for EguiPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.init_resource::<WindowCloseRequestedReader>()
+            .add_asset::<EguiMaterial>()
             .add_startup_system(startup.thread_local_system())
-            .add_system_to_stage("pre_update", egui_pre_update_system.system())
-            .add_system_to_stage("post_update", egui_post_update_system.system())
+            .add_startup_system(startup_rendering.system())
+            .add_system_to_stage(stage::PRE_UPDATE, egui_pre_update_system.system())
+            .add_system_to_stage(stage::POST_UPDATE, egui_post_update_system.system())
             .add_system(egui_check_windows.system())
             .add_system(exit_on_window_close_system.system());
     }

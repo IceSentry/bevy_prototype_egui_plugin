@@ -1,6 +1,5 @@
 mod backend;
 mod egui_plugin;
-mod painter;
 
 use bevy::prelude::*;
 use egui::label;
