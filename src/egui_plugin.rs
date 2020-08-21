@@ -157,25 +157,7 @@ const FRAGMENT_SHADER: &str = r#"
     }
 "#;
 
-fn startup(_world: &mut World, resources: &mut Resources) {
-    let start_time = Instant::now();
-
-    let ctx = egui::Context::new();
-
-    let state = EguiPluginState {
-        start_time,
-        frame_start: start_time,
-        ctx,
-        raw_input: None,
-        runner: EguiBevyBackend::new(RunMode::Continuous), // TODO
-    };
-    let ui = EguiContext { ui: None };
-
-    resources.insert(state);
-    resources.insert(ui);
-}
-
-fn startup_rendering(
+fn startup(
     mut _commands: Commands,
     mut pipelines: ResMut<Assets<PipelineDescriptor>>,
     mut shaders: ResMut<Assets<Shader>>,
@@ -212,9 +194,23 @@ pub struct EguiPlugin;
 
 impl Plugin for EguiPlugin {
     fn build(&self, app: &mut AppBuilder) {
+        let start_time = Instant::now();
+
+        let ctx = egui::Context::new();
+
+        let state = EguiPluginState {
+            start_time,
+            frame_start: start_time,
+            ctx,
+            raw_input: None,
+            runner: EguiBevyBackend::new(RunMode::Continuous), // TODO
+        };
+        let ui = EguiContext { ui: None };
+
         app.add_asset::<EguiMaterial>()
-            .add_startup_system(startup.thread_local_system())
-            .add_startup_system(startup_rendering.system())
+            .add_resource(ui)
+            .add_resource(state)
+            .add_startup_system(startup.system())
             .add_system_to_stage(stage::PRE_UPDATE, egui_pre_update_system.system())
             .add_system_to_stage(stage::POST_UPDATE, egui_post_update_system.system())
             .add_system(egui_check_windows.system());
