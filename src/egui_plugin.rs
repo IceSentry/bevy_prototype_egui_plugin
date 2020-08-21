@@ -1,13 +1,21 @@
-use crate::backend::EguiBevyBackend;
+use crate::{backend::EguiBevyBackend, painter};
 use bevy::{prelude::*, window::WindowCloseRequested};
 use egui::app::RunMode;
+use egui_glium::storage::FileStorage;
 use std::{sync::Arc, time::Instant};
+
+const EGUI_MEMORY_KEY: &str = "egui";
 
 struct EguiPluginState {
     start_time: Instant,
+    frame_start: Instant,
     ctx: Arc<egui::Context>,
-    raw_input: egui::RawInput,
+    raw_input: Option<egui::RawInput>,
     runner: EguiBevyBackend,
+}
+
+struct EguiContext {
+    ui: Option<egui::Ui>,
 }
 
 #[derive(Default)]
@@ -48,65 +56,79 @@ pub fn local_time_of_day() -> f64 {
 pub fn make_raw_input(window: &Window) -> egui::RawInput {
     egui::RawInput {
         screen_size: { egui::vec2(window.width as f32, window.height as f32) },
-        pixels_per_point: None, // TODO
+        pixels_per_point: Some(1.0), // TODO
         ..Default::default()
     }
 }
 
-fn egui_system(mut state: ResMut<EguiPluginState>) {
-    let egui_start = Instant::now();
-    let mut raw_input = state.raw_input.take();
-    let time = state.start_time.elapsed().as_nanos() as f64 * 1e-9;
-    raw_input.time = time;
-    raw_input.seconds_since_midnight = Some(local_time_of_day());
+fn egui_check_windows(mut state: ResMut<EguiPluginState>, windows: Res<Windows>) {
+    state.raw_input = Some({
+        let window = windows.get_primary().unwrap();
+        make_raw_input(window)
+    });
+}
 
-    let mut ui = state.ctx.begin_frame(raw_input);
-    // TODO get app
-    // app.ui(&mut ui, &mut runner);
-    let (output, paint_jobs) = state.ctx.end_frame();
+fn egui_pre_update_system(mut state: ResMut<EguiPluginState>, mut ctx: ResMut<EguiContext>) {
+    state.frame_start = Instant::now();
+    if let Some(raw_input) = state.raw_input.take().as_mut() {
+        let time = state.start_time.elapsed().as_nanos() as f64 * 1e-9;
+        raw_input.time = time;
+        raw_input.seconds_since_midnight = Some(local_time_of_day());
 
-    let frame_time = (Instant::now() - egui_start).as_secs_f64() as f32;
-    state.runner.frame_times.add(time, frame_time);
+        let ui = state.ctx.begin_frame(raw_input.clone());
+        ctx.ui = Some(ui);
+    }
+}
+
+fn egui_post_update_system(mut state: ResMut<EguiPluginState>) {
+    let raw_input = state.raw_input.take();
+
+    let (_output, paint_jobs) = state.ctx.end_frame();
+
+    let frame_time = (Instant::now() - state.frame_start).as_secs_f64() as f32;
+    if let Some(raw_input) = raw_input {
+        state.runner.frame_times.add(raw_input.time, frame_time);
+    }
+
+    painter::paint_jobs(paint_jobs, state.ctx.texture());
+
+    // At this point egui_glium checks for quit() or request_redraw.
+    // This is already handled by bevy so we can ignore that
 
     // TODO
-    // painter.paint_jobs(&display, paint_jobs, ctx.texture());
-
-    // at this point egui_glium checks for quit or request_redraw. This is already handle by bevy so we can ignore that
-
     // handle_output(output, &display, clipboard.as_mut());
 }
 
 fn startup(_world: &mut World, resources: &mut Resources) {
-    // let storage = FileStorage::from_path(".egui.json".into());
-    // let app: egui::DemoApp = egui::app::get_value(&storage, egui::app::APP_KEY).unwrap_or_default();
-
-    let ctx = egui::Context::new();
     let start_time = Instant::now();
 
-    let raw_input = {
-        let windows = resources.get::<Windows>().unwrap();
-        let window = windows.get_primary().unwrap();
+    let storage = FileStorage::from_path(".egui_demo_glium.json".into());
 
-        make_raw_input(window)
-    };
+    let ctx = egui::Context::new();
+    *ctx.memory() = egui::app::get_value(&storage, EGUI_MEMORY_KEY).unwrap_or_default();
 
     let state = EguiPluginState {
         start_time,
+        frame_start: start_time,
         ctx,
-        raw_input,
+        raw_input: None,
         runner: EguiBevyBackend::new(RunMode::Continuous), // TODO
     };
+    let ui = EguiContext { ui: None };
 
     resources.insert(state);
+    resources.insert(ui);
 }
 
-pub struct ImguiPlugin;
+pub struct EguiPlugin;
 
-impl Plugin for ImguiPlugin {
+impl Plugin for EguiPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.init_resource::<WindowCloseRequestedReader>()
-            .add_startup_system(startup.thread_local_system())
-            .add_system(egui_system.system())
+            .add_startup_system_to_stage("post_startup", startup.thread_local_system())
+            .add_system_to_stage("pre_update", egui_pre_update_system.system())
+            .add_system_to_stage("post_update", egui_post_update_system.system())
+            .add_system(egui_check_windows.system())
             .add_system(exit_on_window_close_system.system());
     }
 }
