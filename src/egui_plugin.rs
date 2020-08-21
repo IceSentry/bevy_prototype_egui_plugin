@@ -30,7 +30,8 @@ pub struct WindowCloseRequestedReader {
     event_reader: EventReader<WindowCloseRequested>,
 }
 
-pub fn exit_on_window_close_system(
+#[allow(dead_code)]
+pub fn save_on_window_close_system(
     mut state: Local<WindowCloseRequestedReader>,
     window_close_requested_events: Res<Events<WindowCloseRequested>>,
 ) {
@@ -211,13 +212,11 @@ pub struct EguiPlugin;
 
 impl Plugin for EguiPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.init_resource::<WindowCloseRequestedReader>()
-            .add_asset::<EguiMaterial>()
+        app.add_asset::<EguiMaterial>()
             .add_startup_system(startup.thread_local_system())
             .add_startup_system(startup_rendering.system())
             .add_system_to_stage(stage::PRE_UPDATE, egui_pre_update_system.system())
             .add_system_to_stage(stage::POST_UPDATE, egui_post_update_system.system())
-            .add_system(egui_check_windows.system())
-            .add_system(exit_on_window_close_system.system());
+            .add_system(egui_check_windows.system());
     }
 }
