@@ -3,14 +3,15 @@ use bevy::{
     math::vec2,
     prelude::*,
     render::{
-        pipeline::PipelineDescriptor,
+        mesh::VertexAttribute,
+        pipeline::{PipelineDescriptor, PrimitiveTopology},
         render_graph::{base, AssetRenderResourcesNode, RenderGraph},
         shader::{ShaderStage, ShaderStages},
     },
     render::{renderer::RenderResources, shader::ShaderDefs},
     window::WindowCloseRequested,
 };
-use egui::app::RunMode;
+use egui::{app::RunMode, paint::Triangles};
 use std::{sync::Arc, time::Instant};
 
 struct EguiPluginState {
@@ -89,7 +90,42 @@ fn egui_pre_update_system(mut state: ResMut<EguiPluginState>, mut ctx: ResMut<Eg
     }
 }
 
-fn egui_post_update_system(mut state: ResMut<EguiPluginState>, ctx: Res<EguiContext>) {
+fn convert_triangles_to_mesh(triangles: Triangles) -> Mesh {
+    let mut positions = Vec::new();
+    let mut uvs = Vec::new();
+    // let mut colors = Vec::new();
+    for vert in triangles.vertices.iter() {
+        positions.push([vert.pos.x, vert.pos.y, 0.0]);
+        uvs.push([vert.uv.0 as f32, vert.uv.1 as f32]);
+        // colors.push(vert.color);
+    }
+    Mesh {
+        primitive_topology: PrimitiveTopology::TriangleList,
+        attributes: vec![
+            VertexAttribute::position(positions),
+            VertexAttribute::uv(uvs),
+        ],
+        indices: Some(triangles.indices),
+    }
+}
+
+#[derive(Bundle)]
+pub struct EguiMeshComponent {
+    pub material: Handle<ColorMaterial>,
+    pub render_pipeline: RenderPipelines,
+    pub draw: Draw,
+    pub mesh: Handle<Mesh>,
+    pub transform: Transform,
+    pub translation: Translation,
+    pub rotation: Rotation,
+    pub scale: Scale,
+}
+
+fn egui_post_update_system(
+    mut commands: Commands,
+    mut state: ResMut<EguiPluginState>,
+    ctx: Res<EguiContext>,
+) {
     let frame_time = (Instant::now() - state.frame_start).as_secs_f64() as f32;
 
     if let Some(raw_input) = state.raw_input.clone() {
@@ -104,7 +140,14 @@ fn egui_post_update_system(mut state: ResMut<EguiPluginState>, ctx: Res<EguiCont
 
     // paint
     let _texture = state.ctx.texture();
-    for (_clip_rect, _triangles) in paint_jobs {}
+
+    let mut meshes = Vec::new();
+    for (_clip_rect, triangles) in paint_jobs {
+        let mesh = convert_triangles_to_mesh(triangles);
+        meshes.push(mesh);
+    }
+
+    commands.spawn(EguiMeshComponent {});
 
     // TODO
     // handle_output(output, &display, clipboard.as_mut());
